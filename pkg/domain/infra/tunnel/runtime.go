@@ -27,14 +27,16 @@ type SystemEngine struct {
 	ClientCtx context.Context
 }
 
+// Issue #26822 : FarmNode now includes an additional array emulatedPlatforms, describes the platforms the farm can emulate
 type FarmNode struct {
-	NodeName        string
-	platforms       sync.Once
-	platformsErr    error
-	os              string
-	arch            string
-	variant         string
-	nativePlatforms []string
+	NodeName          string
+	platforms         sync.Once
+	platformsErr      error
+	os                string
+	arch              string
+	variant           string
+	nativePlatforms   []string
+	emulatedPlatforms []string
 }
 
 func remoteProxySignals(ctrID string, killFunc func(string) error) {

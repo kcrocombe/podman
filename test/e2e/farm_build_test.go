@@ -10,9 +10,8 @@
 // Should the test environment set up fail, then the testing of the builds will
 // skipped. This should not be interpreted as the build tests having failed.
 //
-// Testing of the farm build is functionality still a little limited, because the
-// farm build does not, as yet, support emulated builds. Consequently, only builds
-// of the native architecture be modelled. Hopefully this will be rectified shortly.
+// The test platform MUST be capable of emulating all four architectures in our
+// test image (linux/arm64 linux/s390x  linux/amd64 linux/ppc64le)
 //
 // The tests themselves all appear (in tabulated form) at the bottom of this file.
 package integration
@@ -122,16 +121,16 @@ func makeReverseProxy(remoteSocket string) (*ReverseProxy, error) {
 /*##########################################################################################################*/
 /*##########################################################################################################*/
 
-var _ = Context("Testing farm build functionality :", Ordered, func() {
+var _ = Context("Testing farm build functionality :", Ordered, ContinueOnFailure, func() {
 
 	// Note: there are two enclosed contexts:
 	//
-	//	the first Context builds the a read-only environment in which testing
+	//	The first Context builds the a read-only environment in which testing
 	//  can be performed. It does not contain any test objects themselves
 	//  and is NOT modified by the tests in any way. Consequently, it is ok to
 	//  build it just once and retain it for the duration of all build tests.
 	//
-	//	the second Context performs the actual testing within that environment.
+	//  The second Context performs the actual testing within that environment.
 	//
 	// Consequently, these two contexts must be performed in ORDER.
 
@@ -148,6 +147,17 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 		contextDir string
 	}
 	/*##########################################################################################################*/
+
+	var isEmulationCapable = func(emulators string, hostArch string) bool {
+		// Confirms that the test platform is one of the supported test platforms
+		// (currently just amd64) AND capable of emulating all
+		// four platforms supported by our base image.
+
+		return ((strings.Contains(emulators, "linux/arm64") &&
+			strings.Contains(emulators, "linux/s390x")) &&
+			strings.Contains(emulators, "linux/ppc64le")) &&
+			hostArch == "linux/amd64"
+	}
 
 	var prepareContextsDir = func(baseTmpDir string, testSrc testImageDescriptor) string {
 		//
@@ -205,7 +215,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 		err = os.Mkdir(podmanTempDir, 0o700)
 		Expect(err).ToNot(HaveOccurred())
 
-		// I think there is a subtl bug under PodmanTestCreateUtil somewhere. Somewhere it
+		// I think there is a subtle bug under PodmanTestCreateUtil somewhere. Somewhere it
 		// does a check for Rootfulness, and sometimes it gets the answer wrong. I think if the user
 		// is running in a group with a degree of elevated privilege, then it decides it
 		// IS rootful. However it then tries to create a socket in a privileged area, only
@@ -213,7 +223,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 
 		// TODO: Need a check for rootfullness ( isRootless())before heading down this road. This only seems
 		// to be a problem when running a test executable built from the localintegration target.
-		// remoteintegration doesn;t seem to have a problem. Since (for reasons explained elsewhere),
+		// remoteintegration doesn't seem to have a problem. Since (for reasons explained elsewhere),
 		// we are always going to running a remoteintegration executable, this is not particularly
 		// pressing. For now, we will de-escalate the panic.
 
@@ -295,7 +305,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 		contextDir: "testImage20241011",
 	}
 	// This is the base image to be used for most of the tests. It is important that it is
-	// a multi-arch manifest. This one contains the following archs:
+	// a multi-arch manifest. This one contains the following architectures:
 	//   * linux/arm64,
 	//   * linux/amd64,
 	//   * linux/ppc64le,
@@ -308,7 +318,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 	var containersDir string
 
 	var hostArch string
-	// var emuInfo string
+	var emuInfo string
 	var testExe = "ginkgo"
 	var err error
 	var revProxy *ReverseProxy
@@ -352,7 +362,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 		// should not pollute the testing in anyway, since once defined the test farms/connections
 		// etc. are completely static.
 		//
-		// Note also that podamanStaticTest is ALWAYS created as a 'remote' instantiation because
+		// Note also that podmanStaticTest is ALWAYS created as a 'remote' instantiation because
 		// we wish to use the remote server functionality that comes with it.  However, we will
 		// use NOT the podmanCmd associated with its That is because, for a 'remote' instantiation
 		// that will resolve to 'podman-remote'. In setting up the test environment we will always
@@ -360,7 +370,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 
 		// Temporary arrangement
 		// At some point I expect this will get merged into the other Static struct....
-		// ..then it will be able to use native commbed too.
+		// ..then it will be able to use native command too.
 
 		podmanStaticLocal = NewPodmanLocal(GlobalTmpDir)
 
@@ -400,7 +410,16 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 		// to be stripped.
 		hostArch = strings.Trim(hostArch, "\\\"/")
 
-		// emuInfo = podmanStaticLocal.PodmanExitCleanly("info", "--format", "{{json .Host.EmulatedArchitectures}}").OutputToString()
+		emuInfo = podmanStaticLocal.PodmanExitCleanly("info", "--format", "{{json .Host.EmulatedArchitectures}}").OutputToString()
+
+		fmt.Println("emuInfo=", emuInfo)
+		fmt.Println("hostArch=", hostArch)
+
+		// We need the test platform to be capable of building each of the architectures
+		// present in our base test image.
+		if !isEmulationCapable(emuInfo, hostArch) {
+			Skip("Test platform cannot emulate the required architectures. Skipping.")
+		}
 	})
 	/*##########################################################################################################*/
 
@@ -502,6 +521,10 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 			Entry("Creating ConB    ", "ConB", PROXY_URL, ""),
 			Entry("Creating Default ", "Default", PROXY_URL, ""),
 			Entry("Creating Offline ", "Offline", OFFLINE_URL, ""),
+			Entry("Creating linux/arm64", "linux/arm64", PROXY_URL, ""),
+			Entry("Creating linux/s390x", "linux/s390x", PROXY_URL, ""),
+			Entry("Creating linux/ppc64le", "linux/ppc64le", PROXY_URL, ""),
+			Entry("Creating linux/amd64", "linux/amd64", PROXY_URL, ""),
 		)
 		/*##########################################################################################################*/
 
@@ -531,6 +554,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 			Entry("Creating offlineFarm  ", "offlineFarm"),
 			Entry("Creating proxyFarm    ", "proxyFarm"),
 			Entry("Creating multinodeFarm", "multinodeFarm"),
+			Entry("Creating namedNodeFarm", "namedNodeFarm"),
 		)
 		/*##########################################################################################################*/
 
@@ -548,7 +572,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 				Eventually(session, DefaultWaitTimeout).Should(Exit(0))
 				Expect(session.Err.Contents()).Should(BeEmpty())
 
-				// Care! - we are not using <podmanest>
+				// Care! - we are not using <podmanTest>
 				Expect(string(session.Out.Contents())).Should(Equal(fmt.Sprintf("Farm \"%s\" updated\n", farmName)))
 			},
 			// NOTE: If you use variables in the Entry statements below, the value they will assume
@@ -561,6 +585,10 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 			Entry("Adding ConA to multinodeFarm ", "multinodeFarm", "ConA"),
 			Entry("Adding ConB to multinodeFarm ", "multinodeFarm", "ConB"),
 			Entry("Adding Default to defaultFarm", "defaultFarm", "Default"),
+			Entry("Adding as390x to namedNodeFarm", "namedNodeFarm", "linux/s390x"),
+			Entry("Adding amd64 to namedNodeFarm", "namedNodeFarm", "linux/amd64"),
+			Entry("Adding ppc64le to namedNodeFarm", "namedNodeFarm", "linux/ppc64le"),
+			Entry("Adding arm64 to namedNodeFarm", "namedNodeFarm", "linux/arm64"),
 		)
 		/*##########################################################################################################*/
 	})
@@ -587,6 +615,8 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 			tag    string
 		}
 
+		// Currently, have no way of determining whether a build has been performed
+		// by emulation or not.
 		type build struct {
 			arch                string
 			expectedTobeBuiltOn string
@@ -823,14 +853,14 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 		/*##########################################################################################################*/
 
 		var indicateAllImagesBuiltToSpecification = func(bldSpecs []build) types.GomegaMatcher {
-			// Checks that the built images on th enodes have been cleared down, if the
+			// Checks that the built images on the nodes have been cleared down, if the
 			// --cleardown flag was supplied.
 			//
 			// If the images were to be retained, checks the relevant server for the presence
 			// of the image and confirms that it of the right architecture.
 			//
 			// Note: it relies on the the array of build specs being the same size
-			// as our podmanSession Array, and that the oreder of entries is the same.
+			// as our podmanSession Array, and that the order of entries is the same.
 
 			// Does this need to return TRUE if the list is empty?
 			matchers := []types.GomegaMatcher{}
@@ -849,7 +879,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 						}, ContainSubstring("failed to find image"),
 					))
 				} else {
-					// check os and architesture.
+					// check os and architecture.
 					matchers = append(matchers, WithTransform(
 						func(sessions []*PodmanSessionIntegration) string {
 							return sessions[i].OutputToString()
@@ -1020,7 +1050,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 
 			// Function will execute a farm build according to the particular test scenario
 			// passed to it, and then run some secondary utilities to analyse the outcome of
-			// the run. (skopeo output, manaifest checks, image checks)
+			// the run. (skopeo output, manifest checks, image checks)
 
 			// The output of all these is passed back so that the success/failure of the test
 			// can be established.
@@ -1254,7 +1284,7 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 				},
 			),
 			//
-			Entry("proxyFarm build with --platforms= empty string",
+			Entry("proxyFarm build with --platforms=empty string",
 				withTestScenarioOf{farm: "proxyFarm", params: "--local=false --platforms=", image: standardTestImage, tag: GOOD_SHORT_TAG},
 				expectBuildsOf{
 					build{arch: HOST_ARCH, expectedTobeBuiltOn: "ConA", usingEmulation: false, withCleanup: false},
@@ -1284,6 +1314,33 @@ var _ = Context("Testing farm build functionality :", Ordered, func() {
 			Entry("Multi Node Farm but with a single distinct architecture available on it",
 				withTestScenarioOf{farm: "multinodeFarm", params: "--local=true", image: standardTestImage, tag: GOOD_SHORT_TAG},
 				expectBuildsOf{
+					build{arch: HOST_ARCH, expectedTobeBuiltOn: LOCAL_HOST, usingEmulation: false, withCleanup: false},
+				},
+			),
+			//
+			// Use only ppc64le and s390x for emulation becuase arm64 and amd64 may be the native architecure of the test
+			// platform.
+			//
+			// ConA is capable of building all four architecures. Here we test it is limited to just the emulated ones
+			// we ask for.
+
+			// NB : if a node is NOT being built by emulation
+			Entry("Emulation activated via --platform flag",
+				withTestScenarioOf{farm: "proxyFarm", params: "--local=false --platforms=HOST_ARCH,linux/ppc64le,linux/s390x", image: standardTestImage, tag: GOOD_SHORT_TAG},
+				expectBuildsOf{
+					build{arch: "linux/ppc64le", expectedTobeBuiltOn: "ConA", usingEmulation: true, withCleanup: false},
+					build{arch: "linux/s390x", expectedTobeBuiltOn: "ConA", usingEmulation: true, withCleanup: false},
+					build{arch: HOST_ARCH, expectedTobeBuiltOn: "ConA", usingEmulation: false, withCleanup: false},
+				},
+			),
+			// Confirm emulation will allocate the build to a node named after its architecture should such
+			// a node exist. NB. Remember, only emulated build are sensitive to Node name. If a platform is capable of
+			// performing a native build, then that platform will ALWAYS be favoured.
+			Entry("Emulation will target the correct Node",
+				withTestScenarioOf{farm: "namedNodeFarm", params: "--local=true --platforms=HOST_ARCH,linux/ppc64le,linux/s390x", image: standardTestImage, tag: GOOD_SHORT_TAG},
+				expectBuildsOf{
+					build{arch: "linux/ppc64le", expectedTobeBuiltOn: "linux/ppc64le", usingEmulation: true, withCleanup: false},
+					build{arch: "linux/s390x", expectedTobeBuiltOn: "linux/s390x", usingEmulation: true, withCleanup: false},
 					build{arch: HOST_ARCH, expectedTobeBuiltOn: LOCAL_HOST, usingEmulation: false, withCleanup: false},
 				},
 			),

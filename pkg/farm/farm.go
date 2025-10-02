@@ -139,10 +139,19 @@ func (f *Farm) NativePlatforms(ctx context.Context) ([]string, error) {
 // Schedule takes a list of platforms and returns a list of connections which
 // can be used to build for those platforms.  It always prefers native builders
 // over emulated builders, but will assign a builder which can use emulation
-// for a platform if no suitable native builder is available.
+// if the following conditions are both true:
+//   - no suitable native builder is available for the platform
+//   - the platform was explicitly asked for via the --platforms parameter
 //
 // If platforms is an empty list, all available native platforms will be
-// scheduled.
+// scheduled, NO emulated ones.
+//
+// Emulated build will be performed on the first suitable builder found EXCEPT
+// if a builder is found via a connection name which bears the same name
+// as the as the architecture to tbe built.
+//
+//	e.g if a connection linux/arm64 exists it will scheduled with any linux/arm64
+//	builds.
 //
 // TODO: add (Priority,Weight *int) a la RFC 2782 to destinations that we know
 // of, and factor those in when assigning builds to nodes in here.
@@ -186,7 +195,19 @@ func (f *Farm) Schedule(ctx context.Context, platforms []string) (Schedule, erro
 				if _, assigned := emulated[e]; !assigned {
 					emulated[e] = name
 				}
+				// Issue #26822 : Support for emulated builds
+				//
+				// If a farm node (connection) bears the SAME NAME as a particular architecture,
+				// we will infer that any emulated builds for that architecture are to be performed
+				// on that node.
+				//
+				//   i.e. an emulated linux/arm64 build will be scheduled on a farm node linux/arm64 (if it exists)
+				//
+				if e == name {
+					emulated[e] = name
+				}
 			}
+
 			return nil
 		})
 	}
@@ -232,12 +253,15 @@ func (f *Farm) Build(ctx context.Context, schedule Schedule, options entities.Bu
 
 	// Build the list of jobs.
 	var jobs sync.Map
+
+	// Issue #26822 : Bug fixed. The jobs Map should be platform --> builder, NOT
+	// builder --> platform. See Note later in code.
 	type job struct {
-		platform string
-		os       string
-		arch     string
-		variant  string
-		builder  entities.ImageEngine
+		builderName string
+		os          string
+		arch        string
+		variant     string
+		builder     entities.ImageEngine
 	}
 	for platform, builderName := range schedule.platformBuilders { // prepare to build
 		builder, ok := f.builders[builderName]
@@ -256,12 +280,18 @@ func (f *Farm) Build(ctx context.Context, schedule Schedule, options entities.Bu
 			rawVariant = p[2]
 		}
 		os, arch, variant := lplatform.Normalize(rawOS, rawArch, rawVariant)
-		jobs.Store(builderName, job{
-			platform: platform,
-			os:       os,
-			arch:     arch,
-			variant:  variant,
-			builder:  builder,
+
+		// Issue #26822 : There was a bug here. jobs was originally a mapping builderName --> platform.
+		// However it SHOULD be a mapping platform --> builderName. ( an architecture only gets built
+		// by one builder, but, in an emulation scenario, a builder might be responsible for building
+		// several different architectures)
+
+		jobs.Store(platform, job{
+			builderName: builderName,
+			os:          os,
+			arch:        arch,
+			variant:     variant,
+			builder:     builder,
 		})
 	}
 
@@ -271,7 +301,11 @@ func (f *Farm) Build(ctx context.Context, schedule Schedule, options entities.Bu
 		authfile:      options.Authfile,
 		skipTLSVerify: options.SkipTLSVerify,
 	}
-	manifestListBuilder := newManifestListBuilder(reference, f.localEngine, listBuilderOptions)
+	// Bug #25039: manifestListBuilder now returns an error should a dodgy reference be provided.
+	manifestListBuilder, err := newManifestListBuilder(reference, f.localEngine, listBuilderOptions)
+	if err != nil {
+		return fmt.Errorf("failed to create manifest list %q: %w", reference, err)
+	}
 
 	// Start builds in parallel and wait for them all to finish.
 	var (
@@ -317,7 +351,9 @@ func (f *Farm) Build(ctx context.Context, schedule Schedule, options entities.Bu
 			var j job
 			defer outWriter.Close()
 			defer errWriter.Close()
-			c, ok := jobs.Load(builder)
+
+			// Issue #26822 : Bug fixed. The jobs Map should be platform --> builder, NOT builder --> platform
+			c, ok := jobs.Load(platform)
 			if !ok {
 				return fmt.Errorf("unknown connection for %q (shouldn't happen)", builder)
 			}
@@ -331,7 +367,8 @@ func (f *Farm) Build(ctx context.Context, schedule Schedule, options entities.Bu
 			fmt.Printf("Starting build for %v at %q\n", buildOptions.Platforms, builder)
 			buildReport, err := j.builder.Build(ctx, options.ContainerFiles, buildOptions)
 			if err != nil {
-				return fmt.Errorf("building for %q on %q: %w", j.platform, builder, err)
+				// Issue #26822 : Bug fixed. The jobs Map should be platform --> builder, NOT builder --> platform
+				return fmt.Errorf("building for %q on %q: %w", platform, builder, err)
 			}
 			fmt.Printf("finished build for %v at %q: built %s\n", buildOptions.Platforms, builder, buildReport.ID)
 			buildResults.Store(platform, buildResult{

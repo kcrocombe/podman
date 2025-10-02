@@ -143,7 +143,7 @@ This option specifies the name of the farm to be used in the build process.
 
 #### **--local**, **-l**
 
-Build image on local machine as well as on farm nodes.
+Build image on local machine as well as on farm nodes (Default: true).
 
 @@option logfile
 
@@ -171,7 +171,16 @@ This option conflicts with **--add-host**.
 
 #### **--platforms**=*p1,p2,p3...*
 
-Build only on farm nodes that match the given platforms.
+Build only on farm nodes whose native architecture matches that of the given platforms.
+
+Should no farm node be able to build a given platform natively, an attempt will be made to
+build it through emulation. Where an emulated build is necessary, it will be built on the
+first node in the farm that is capable of performing that build, except in the following
+circumstance; should a node in the farm be explicitly named after a particular architecture
+(e.g. linux/s390x), then any emulated builds for that architecture will be performed by
+that node. This allows a workload necessitating multiple emulated builds to be manually
+shared across multiple farm nodes, rather than having a single node performing all emulated
+builds.
 
 @@option pull.image
 
@@ -268,9 +277,9 @@ Build named image and manifest list using the specified farm, removing all image
 $ podman farm build --farm myfarm --cleanup -t name .
 ```
 
-Build named images and manifest list for specified platforms using default farm:
+Build named images and manifest list for specified platforms using default farm. Will use emulation if no native builder is available:
 ```
-$ podman farm build --platforms arm64,amd64 -t name .
+$ podman farm build --platforms linux/arm64,linux/amd64 -t name .
 ```
 
 ## SEE ALSO
